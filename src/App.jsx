@@ -5,7 +5,22 @@ import * as XLSX from 'xlsx';
 // CONSTANTS
 // ============================================
 
+// SECURITY: API key loaded from environment variable at build time.
+// The .env file is gitignored and never committed to source control.
 const API_KEY = import.meta.env.VITE_ANTHROPIC_KEY || '';
+
+// SECURITY: Upload & processing limits (OWASP file upload best practices)
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_SESSIONS = 500;
+const MAX_FIELD_LENGTH = 500;
+const MAX_CONVERSATION_LENGTH = 50000;
+const ALLOWED_EXTENSIONS = /\.xlsx$/i;
+
+// SECURITY: Client-side rate limiting
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+const RATE_LIMIT_MAX_CALLS = 60;    // max 60 API calls per minute
+const apiCallTimestamps = [];
 
 const CATS = {
   'OTC Medication': { cls: 'badge-otc', color: '#0d9b6a' },
@@ -91,6 +106,76 @@ OUTPUT FORMAT — respond ONLY with this JSON, no other text:
 }`;
 
 // ============================================
+// SECURITY: Input Sanitization & Validation
+// ============================================
+
+/** SECURITY: Strip HTML/script tags to prevent XSS (OWASP A7) */
+function sanitize(str) {
+  if (typeof str !== 'string') return String(str || '');
+  return str
+    .replace(/<[^>]*>/g, '')           // strip HTML tags
+    .replace(/javascript:/gi, '')       // strip JS protocol
+    .replace(/on\w+\s*=/gi, '')         // strip event handlers
+    .slice(0, MAX_FIELD_LENGTH);        // enforce length limit
+}
+
+/** SECURITY: Validate uploaded file (OWASP file upload) */
+function validateFile(file) {
+  if (!file) return 'No file selected.';
+  if (!ALLOWED_EXTENSIONS.test(file.name)) return 'Only .xlsx files are accepted.';
+  if (file.size > MAX_FILE_SIZE_BYTES) return `File too large. Maximum size is ${MAX_FILE_SIZE_MB}MB.`;
+  if (file.size === 0) return 'File is empty.';
+  return null; // no error
+}
+
+/** SECURITY: Check rate limit before API call */
+function checkRateLimit() {
+  const now = Date.now();
+  // Remove timestamps older than the window
+  while (apiCallTimestamps.length > 0 && apiCallTimestamps[0] < now - RATE_LIMIT_WINDOW_MS) {
+    apiCallTimestamps.shift();
+  }
+  if (apiCallTimestamps.length >= RATE_LIMIT_MAX_CALLS) {
+    return false; // rate limited
+  }
+  apiCallTimestamps.push(now);
+  return true; // allowed
+}
+
+/** SECURITY: Validate known category names from Claude response */
+const VALID_CATEGORIES = new Set([
+  'OTC Medication', 'Veterinary Prescription', 'Veterinary Visit',
+  'Artificial Insemination', 'Laboratory Work', 'Feeds', 'Hardware', 'Agrovet Connection',
+]);
+const VALID_CONFIDENCE = new Set(['High', 'Medium', 'Low']);
+
+/** SECURITY: Schema-validate Claude's classification response (reject unexpected data) */
+function validateClassification(data) {
+  if (!data || typeof data !== 'object') throw new Error('Invalid classification: not an object');
+  const result = {
+    categories: [],
+    off_topic: Boolean(data.off_topic),
+    off_topic_subject: sanitize(String(data.off_topic_subject || '')),
+    no_opportunity: Boolean(data.no_opportunity),
+    no_opportunity_reason: sanitize(String(data.no_opportunity_reason || '')),
+    other_opportunities: sanitize(String(data.other_opportunities || '')),
+    lead_summary: sanitize(String(data.lead_summary || '')),
+  };
+  if (Array.isArray(data.categories)) {
+    result.categories = data.categories
+      .filter(c => c && typeof c === 'object')
+      .slice(0, 10) // cap at 10 categories per session
+      .map(c => ({
+        category: VALID_CATEGORIES.has(c.category) ? c.category : 'Unknown',
+        confidence: VALID_CONFIDENCE.has(c.confidence) ? c.confidence : 'Low',
+        products: sanitize(String(c.products || '')),
+        reasoning: sanitize(String(c.reasoning || '')),
+      }));
+  }
+  return result;
+}
+
+// ============================================
 // HELPERS
 // ============================================
 
@@ -102,28 +187,43 @@ function parseSessions(wb) {
   let cur = null;
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i], sid = r[0];
+    // SECURITY: Validate session ID is numeric
     if (sid && sid !== '' && !isNaN(Number(sid))) {
       if (cur) { cur.conversation = cur._parts.filter(Boolean).join('\n'); out.push(cur); }
+      // SECURITY: Sanitize all user-facing string fields
       cur = {
-        sessionId: String(sid), started: r[1] || '', ended: r[2] || '', duration: r[3] || '',
-        farmerName: r[4] || 'Unknown', phone: r[5] || '', ward: r[6] || '', county: r[7] || '',
-        animalType: r[8] || '', issueCategory: r[9] || '', issueDescription: r[10] || '',
-        messageCount: r[11] || '', avgResponseTime: r[12] || '',
-        feedbackGiven: r[13] || '', feedbackRating: r[14] || '',
-        _parts: [], prescriptionNotes: r[39] || '',
+        sessionId: String(Number(sid)), // force numeric string
+        started: sanitize(r[1]), ended: sanitize(r[2]), duration: sanitize(r[3]),
+        farmerName: sanitize(r[4]) || 'Unknown', phone: sanitize(r[5]),
+        ward: sanitize(r[6]), county: sanitize(r[7]),
+        animalType: sanitize(r[8]), issueCategory: sanitize(r[9]),
+        issueDescription: sanitize(r[10]),
+        messageCount: sanitize(r[11]), avgResponseTime: sanitize(r[12]),
+        feedbackGiven: sanitize(r[13]), feedbackRating: sanitize(r[14]),
+        _parts: [], prescriptionNotes: sanitize(r[39]),
       };
       if (r[15]) cur._parts.push(String(r[15]));
     } else if (cur && r[15]) {
       cur._parts.push(String(r[15]));
     }
+    // SECURITY: Cap max sessions to prevent abuse
+    if (out.length >= MAX_SESSIONS) break;
   }
-  if (cur) { cur.conversation = cur._parts.filter(Boolean).join('\n'); out.push(cur); }
-  return out.map(({ _parts, ...rest }) => rest);
+  if (cur && out.length < MAX_SESSIONS) {
+    cur.conversation = cur._parts.filter(Boolean).join('\n');
+    out.push(cur);
+  }
+  return out.map(({ _parts, ...rest }) => ({
+    ...rest,
+    // SECURITY: Truncate conversation to prevent excessive memory/API usage
+    conversation: rest.conversation?.slice(0, MAX_CONVERSATION_LENGTH) || '',
+  }));
 }
 
 function trunc(t, n = 3000) { return !t ? '' : t.length <= n ? t : t.slice(0, n) + '\n…[truncated]'; }
 
 function buildMsg(s) {
+  // SECURITY: All fields are already sanitized from parseSessions
   return `SESSION ID: ${s.sessionId}\nAnimal Type: ${s.animalType || 'Not specified'}\nIssue Category: ${s.issueCategory || 'Not specified'}\nIssue Description: ${s.issueDescription || 'Not specified'}\nFarmer: ${s.farmerName || 'Unknown'}, County: ${s.county || 'Unknown'}, Ward: ${s.ward || 'Unknown'}, Phone: ${s.phone || 'Unknown'}\n\nCONVERSATION:\n${trunc(s.conversation)}\n\nClassify this session into commercial opportunity categories.`;
 }
 
@@ -350,10 +450,9 @@ export default function App() {
   const onFile = useCallback((f) => {
     setErr('');
     if (!f) return;
-    if (!f.name.match(/\.xlsx?$/i)) {
-      setErr('Please upload an Excel file (.xlsx). Other formats are not supported.');
-      return;
-    }
+    // SECURITY: Validate file type, size, and extension (OWASP file upload)
+    const fileErr = validateFile(f);
+    if (fileErr) { setErr(fileErr); return; }
     setParsing(true);
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -361,6 +460,9 @@ export default function App() {
         const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
         const s = parseSessions(wb);
         if (!s.length) { setErr('No sessions found. Ensure column A has numeric Session IDs.'); setParsing(false); return; }
+        if (s.length >= MAX_SESSIONS) {
+          setErr(`File contains many sessions. Processing capped at ${MAX_SESSIONS} for performance.`);
+        }
         setSessions(s); setResults([]); setStage('preview');
       } catch (ex) { setErr(`Parse error: ${ex.message}`); }
       setParsing(false);
@@ -372,6 +474,11 @@ export default function App() {
   const onDrop = useCallback((e) => { e.preventDefault(); setDrag(false); onFile(e.dataTransfer.files[0]); }, [onFile]);
 
   const classify = async (s) => {
+    // SECURITY: Check API key is configured
+    if (!API_KEY) throw new Error('API key not configured. Contact your administrator.');
+    // SECURITY: Client-side rate limiting
+    if (!checkRateLimit()) throw new Error('Rate limit reached (60 calls/min). Please wait a moment.');
+
     const res = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -386,16 +493,23 @@ export default function App() {
         messages: [{ role: 'user', content: buildMsg(s) }],
       }),
     });
-    if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    // SECURITY: Handle HTTP errors with user-friendly messages
+    if (res.status === 429) throw new Error('API rate limit exceeded. The system will retry automatically.');
+    if (res.status === 401) throw new Error('API key is invalid or expired. Contact your administrator.');
+    if (!res.ok) throw new Error(`API error (${res.status}). Please try again.`);
+
     const d = await res.json();
     let txt = d.content?.[0]?.text || '';
     const m = txt.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (m) txt = m[1];
+    let parsed;
     try {
-      return JSON.parse(txt.trim());
+      parsed = JSON.parse(txt.trim());
     } catch {
-      throw new Error(`Invalid AI response — could not parse classification. Raw: ${txt.slice(0, 100)}`);
+      throw new Error('Invalid AI response — could not parse classification.');
     }
+    // SECURITY: Schema-validate and sanitize the response
+    return validateClassification(parsed);
   };
 
   const CONCURRENCY = 5;

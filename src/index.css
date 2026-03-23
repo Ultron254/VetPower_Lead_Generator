@@ -1546,34 +1546,196 @@ h1, h2, h3, h4 {
   font-weight: 600;
 }
 
-/* --- Responsive --- */
+/* ===================================================
+   RESPONSIVE DESIGN — All Common Devices
+   Breakpoints:
+   - 1024px: iPad, small laptops, tablets landscape
+   - 768px: iPad portrait, tablets, phones landscape
+   - 430px: iPhone Pro Max, large Android phones
+   - 390px: iPhone 12-15 standard, Android mid-range
+   - 360px: Small Android phones, Galaxy A series, older models
+   =================================================== */
+
+/* --- Touch-friendly defaults (OWASP mobile best practices) --- */
+@media (hover: none) and (pointer: coarse) {
+  /* Min 44px touch targets per Apple HIG / WCAG 2.5.5 */
+  .btn { min-height: 44px; min-width: 44px; }
+  .pill { min-height: 36px; padding: 8px 14px; }
+  .s-head { min-height: 56px; }
+  .breadcrumb-link { min-height: 44px; display: inline-flex; align-items: center; }
+  /* Prevent zoom on input focus (iOS) */
+  input, select, textarea { font-size: 16px !important; }
+  /* Disable hover effects on touch devices */
+  .hiw-step:hover { transform: none; box-shadow: none; }
+  .feature-chip:hover { transform: none; box-shadow: none; }
+  .metric:hover { transform: none; }
+  .surface:hover { box-shadow: var(--shadow-sm); }
+}
+
+/* --- Tablets & Small Laptops (≤1024px) --- */
+@media (max-width: 1024px) {
+  .app { max-width: 100%; padding: var(--s6) var(--s5); }
+  .hero { padding: var(--s8) 0 var(--s6); }
+  .overview-grid { grid-template-columns: repeat(2, 1fr); }
+  .metrics { grid-template-columns: repeat(3, 1fr); }
+  .detail-grid { grid-template-columns: repeat(2, 1fr); }
+  /* Reduce orb sizes for performance */
+  .orb-1 { width: 300px; height: 300px; }
+  .orb-2 { width: 200px; height: 200px; }
+  .orb-3 { width: 180px; height: 180px; }
+}
+
+/* --- Tablets Portrait & Phones Landscape (≤768px) --- */
 @media (max-width: 768px) {
   .app { padding: var(--s5) var(--s4); }
   .hero { padding: var(--s7) 0 var(--s5); }
   .hero h1 { font-size: 1.8rem; }
+  .hero-sub { font-size: 0.95rem; }
   .surface-pad { padding: var(--s5); }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .overview-grid { grid-template-columns: 1fr; }
   .features-row { grid-template-columns: 1fr; }
+  .hiw-steps { grid-template-columns: 1fr; }
 
   .s-head {
     grid-template-columns: 1fr;
     gap: var(--s2);
   }
-
   .s-summary { max-width: 100%; }
+  .s-badges { flex-wrap: wrap; }
   .bar-name { width: 90px; font-size: 0.7rem; }
   .detail-grid { grid-template-columns: 1fr; }
-  .results-header { flex-direction: column; align-items: flex-start; }
+  .results-header { flex-direction: column; align-items: flex-start; gap: var(--s3); }
+  .results-header .actions { width: 100%; }
+  .results-header .actions .btn { flex: 1; }
   .filters { gap: 4px; }
-  .hiw-steps { grid-template-columns: 1fr; }
 
-  .livestock-animal {
-    opacity: 0.03 !important;
+  /* Make table horizontally scrollable */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table { min-width: 600px; }
+
+  /* Reduce background animations for performance */
+  .livestock-animal { opacity: 0.03 !important; }
+  .bg-orbs { display: none; }
+}
+
+/* --- Large Phones: iPhone Pro Max, Galaxy S Ultra (≤430px) --- */
+@media (max-width: 430px) {
+  .app { padding: var(--s4) var(--s3); }
+  .hero { padding: var(--s6) 0 var(--s4); }
+  .hero h1 { font-size: 1.6rem; letter-spacing: -0.025em; }
+  .hero-sub { font-size: 0.9rem; max-width: 100%; }
+  .hero-mark { font-size: 0.65rem; padding: 3px 10px; }
+
+  .surface-pad { padding: var(--s4); }
+  .drop-zone { padding: var(--s7) var(--s4); }
+  .drop-title { font-size: 1rem; }
+  .drop-hint { font-size: 0.8rem; }
+  .drop-icon { width: 48px; height: 48px; border-radius: 12px; }
+
+  .metrics { grid-template-columns: repeat(2, 1fr); gap: var(--s3); }
+  .metric { padding: var(--s4) var(--s3); }
+  .metric-val { font-size: 1.6rem; }
+  .metric-label { font-size: 0.65rem; }
+
+  .btn { font-size: 0.82rem; padding: var(--s3) var(--s4); }
+  .btn-lg { padding: 12px var(--s5); font-size: 0.9rem; }
+  .toolbar { flex-direction: column; gap: var(--s2); }
+  .toolbar .btn { width: 100%; }
+
+  .pill { font-size: 0.7rem; padding: 6px 10px; }
+  .pill .ct { min-width: 16px; height: 16px; font-size: 0.6rem; }
+
+  .search-box { padding: var(--s2) var(--s3); }
+  .search-input { font-size: 0.82rem; }
+
+  .badge { font-size: 0.65rem; padding: 2px 8px; }
+
+  .s-id { font-size: 0.82rem; }
+  .s-tag { font-size: 0.65rem; }
+  .s-summary { font-size: 0.72rem; max-width: 100%; white-space: normal; }
+
+  .pipeline { padding: var(--s4); }
+  .pipeline h2 { font-size: 1.1rem; }
+  .chart-title { font-size: 0.65rem; }
+  .bar-row { height: 28px; }
+  .bar-name { width: 70px; font-size: 0.65rem; }
+  .bar-track { height: 20px; }
+  .bar-val { font-size: 0.6rem; }
+
+  .progress-card { padding: var(--s4); }
+  .progress-top h3 { font-size: 0.9rem; }
+  .progress-meta { font-size: 0.72rem; flex-wrap: wrap; gap: var(--s2); }
+
+  .completion-banner { flex-direction: column; text-align: center; padding: var(--s4); }
+
+  .footer-brand { font-size: 0.78rem; }
+  .footer-meta { font-size: 0.65rem; }
+}
+
+/* --- Standard Phones: iPhone 12-15, Pixel 7 (≤390px) --- */
+@media (max-width: 390px) {
+  .hero h1 { font-size: 1.45rem; }
+  .hero-sub { font-size: 0.85rem; }
+  .metrics { grid-template-columns: repeat(2, 1fr); gap: var(--s2); }
+  .metric { padding: var(--s3); }
+  .metric-val { font-size: 1.4rem; }
+  .features-row { gap: var(--s2); }
+  .feature-chip { padding: var(--s2) var(--s3); }
+  .feature-title { font-size: 0.75rem; }
+  .feature-desc { font-size: 0.65rem; }
+  .filters { padding: var(--s2); }
+  .pill { font-size: 0.65rem; }
+  .s-body { padding: 0 var(--s3) var(--s3); }
+  .detail-cell .dc-label { font-size: 0.6rem; }
+  .detail-cell .dc-val { font-size: 0.78rem; }
+  .conv-preview { font-size: 0.72rem; padding: var(--s3); max-height: 140px; }
+}
+
+/* --- Small Phones: Galaxy A, older Android (≤360px) --- */
+@media (max-width: 360px) {
+  .app { padding: var(--s3) var(--s2); }
+  .hero h1 { font-size: 1.3rem; }
+  .hero-sub { font-size: 0.8rem; }
+  .hero-mark { font-size: 0.6rem; }
+  .drop-zone { padding: var(--s6) var(--s3); }
+  .drop-title { font-size: 0.9rem; }
+  .drop-icon { width: 40px; height: 40px; }
+  .metrics { grid-template-columns: 1fr 1fr; gap: var(--s2); }
+  .metric-val { font-size: 1.2rem; }
+  .btn-lg { font-size: 0.85rem; }
+  .pipeline { padding: var(--s3); }
+  .bar-name { width: 60px; font-size: 0.6rem; }
+  .search-box { margin-bottom: var(--s3); }
+}
+
+/* --- Safe Area Insets (notched devices: iPhone X+, Android punch-hole) --- */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .app {
+    padding-left: max(var(--s4), env(safe-area-inset-left));
+    padding-right: max(var(--s4), env(safe-area-inset-right));
+  }
+  .app-footer {
+    padding-bottom: max(var(--s5), env(safe-area-inset-bottom));
   }
 }
 
-@media (max-width: 480px) {
-  .metrics { grid-template-columns: 1fr; }
-  .toolbar { flex-direction: column; }
+/* --- Reduced Motion (accessibility / battery saver) --- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .livestock-bg, .bg-orbs { display: none; }
+}
+
+/* --- Landscape Phones (short viewport) --- */
+@media (max-height: 500px) and (orientation: landscape) {
+  .hero { padding: var(--s4) 0 var(--s3); }
+  .hero h1 { font-size: 1.4rem; }
+  .hero-sub { display: none; }
+  .hero::before { display: none; }
+  .livestock-bg { display: none; }
+  .s-list { max-height: 50vh; }
 }
