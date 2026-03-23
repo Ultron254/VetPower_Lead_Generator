@@ -1,9 +1,11 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 
 // ============================================
 // CONSTANTS
 // ============================================
+
+const API_KEY = import.meta.env.VITE_ANTHROPIC_KEY || '';
 
 const CATS = {
   'OTC Medication': { cls: 'badge-otc', color: '#0d9b6a' },
@@ -15,6 +17,17 @@ const CATS = {
   'Hardware': { cls: 'badge-hardware', color: '#5a6673' },
   'Agrovet Connection': { cls: 'badge-agrovet', color: '#0f7e8c' },
 };
+
+const LIVESTOCK_IMAGES = [
+  { src: '/cow.png', alt: 'Cow' },
+  { src: '/goat.png', alt: 'Goat' },
+  { src: '/chicken.png', alt: 'Chicken' },
+  { src: '/sheep.png', alt: 'Sheep' },
+  { src: '/camel.png', alt: 'Camel' },
+  { src: '/friesian.png', alt: 'Friesian Cow' },
+  { src: '/donkey.png', alt: 'Donkey' },
+  { src: '/rooster.png', alt: 'Rooster' },
+];
 
 const SYS_PROMPT = `You are a veterinary commercial opportunity classifier for VetPower, an AI-powered livestock knowledge platform in Kenya. Your job is to read farmer-AI conversation sessions and identify lead generation opportunities.
 
@@ -139,9 +152,9 @@ function stats(sessions) {
 }
 
 function rStats(results) {
-  const cc = {}; let opp = 0, ot = 0, no = 0, hi = 0;
+  const cc = {}; let opp = 0, ot = 0, no = 0, hi = 0, errCount = 0;
   results.forEach(r => {
-    if (r.error || !r.classification) return;
+    if (r.error || !r.classification) { errCount++; return; }
     const cl = r.classification, cats = cl.categories || [];
     if (cl.off_topic) ot++;
     if (cl.no_opportunity) no++;
@@ -149,12 +162,13 @@ function rStats(results) {
     if (cats.some(c => c.confidence === 'High')) hi++;
     cats.forEach(c => { cc[c.category] = (cc[c.category] || 0) + 1; });
   });
-  return { total: results.length, opp, ot, no, hi, cc };
+  return { total: results.length, opp, ot, no, hi, cc, errCount };
 }
 
 function downloadXlsx(results, sessions) {
+  const sessionMap = new Map(sessions.map(s => [s.sessionId, s]));
   const rows = results.map(r => {
-    const s = sessions.find(x => x.sessionId === r.sessionId) || {};
+    const s = sessionMap.get(r.sessionId) || {};
     const cl = r.classification || {}, cats = cl.categories || [];
     return {
       'Session ID': s.sessionId || r.sessionId,
@@ -176,14 +190,104 @@ function downloadXlsx(results, sessions) {
     };
   });
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = Object.keys(rows[0] || {}).map(k => ({ wch: Math.min(Math.max(k.length, ...rows.map(r => String(r[k] || '').length)) + 2, 50) }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Lead Classification');
-  XLSX.writeFile(wb, 'VetPower_Lead_Classification.xlsx');
+  const colKeys = Object.keys(rows[0] || {});
+  ws['!cols'] = colKeys.map(k => ({ wch: Math.min(Math.max(k.length, 10) + 2, 50) }));
+  const wb2 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb2, ws, 'Lead Classification');
+  XLSX.writeFile(wb2, 'VetPower_Lead_Classification.xlsx');
 }
 
 // ============================================
-// ICONS — minimal, Apple-style line icons
+// RETRY WITH EXPONENTIAL BACKOFF
+// ============================================
+
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      if (res.status >= 500 && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function fmtTime(s) {
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return sec > 0 ? `${m}m ${sec}s` : `${m}m`;
+}
+
+// ============================================
+// LIVESTOCK BACKGROUND COMPONENT
+// ============================================
+
+function LivestockBackground() {
+  const [animals, setAnimals] = useState([]);
+
+  useEffect(() => {
+    const items = [];
+    for (let i = 0; i < 12; i++) {
+      const img = LIVESTOCK_IMAGES[i % LIVESTOCK_IMAGES.length];
+      items.push({
+        id: i,
+        src: img.src,
+        alt: img.alt,
+        x: Math.random() * 90 + 5,
+        y: Math.random() * 80 + 10,
+        size: 60 + Math.random() * 100,
+        opacity: 0.04 + Math.random() * 0.04,
+        duration: 25 + Math.random() * 20,
+        delay: Math.random() * -30,
+        drift: 15 + Math.random() * 25,
+        flip: Math.random() > 0.5,
+      });
+    }
+    setAnimals(items);
+  }, []);
+
+  return (
+    <div className="livestock-bg" aria-hidden="true">
+      {animals.map(a => (
+        <img
+          key={a.id}
+          src={a.src}
+          alt=""
+          className="livestock-animal"
+          style={{
+            left: `${a.x}%`,
+            top: `${a.y}%`,
+            width: `${a.size}px`,
+            opacity: a.opacity,
+            animationDuration: `${a.duration}s`,
+            animationDelay: `${a.delay}s`,
+            '--drift-x': `${a.drift}px`,
+            '--drift-y': `${a.drift * 0.6}px`,
+            transform: a.flip ? 'scaleX(-1)' : 'none',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ============================================
+// ICONS
 // ============================================
 
 const I = {
@@ -194,7 +298,8 @@ const I = {
   Redo: (p) => <svg {...p} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>,
   Search: (p) => <svg {...p} xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>,
   Layers: (p) => <svg {...p} xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>,
-  File: (p) => <svg {...p} xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="16" y2="17" /></svg>,
+  Check: (p) => <svg {...p} xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>,
+  Sparkle: (p) => <svg {...p} xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z" /></svg>,
   Stop: () => <span style={{ display: 'inline-block', width: 10, height: 10, background: 'currentColor', borderRadius: 2 }} />,
 };
 
@@ -206,7 +311,6 @@ export default function App() {
   const [stage, setStage] = useState('upload');
   const [sessions, setSessions] = useState([]);
   const [results, setResults] = useState([]);
-  const [apiKey, setApiKey] = useState('');
   const [err, setErr] = useState('');
   const [processing, setProcessing] = useState(false);
   const [idx, setIdx] = useState(0);
@@ -214,11 +318,15 @@ export default function App() {
   const [expanded, setExpanded] = useState({});
   const [drag, setDrag] = useState(false);
   const [metricsVisible, setMetricsVisible] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [completionAnim, setCompletionAnim] = useState(false);
+  const [avgTime, setAvgTime] = useState(0);
+  const [searchTerm, setSearchTerm] = useState('');
 
   const fileRef = useRef(null);
   const stopRef = useRef(false);
+  const startTimeRef = useRef(0);
 
-  // Stagger metrics animation on preview mount
   useEffect(() => {
     if (stage === 'preview') {
       const t = setTimeout(() => setMetricsVisible(true), 100);
@@ -227,7 +335,18 @@ export default function App() {
     setMetricsVisible(false);
   }, [stage]);
 
-  // --- File handling ---
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape' && stage !== 'upload') {
+        if (!processing) reset();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [stage, processing]);
+
+  const sessionMap = useMemo(() => new Map(sessions.map(s => [s.sessionId, s])), [sessions]);
+
   const onFile = useCallback((f) => {
     setErr('');
     if (!f) return;
@@ -235,28 +354,29 @@ export default function App() {
       setErr('Please upload an Excel file (.xlsx). Other formats are not supported.');
       return;
     }
+    setParsing(true);
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
         const s = parseSessions(wb);
-        if (!s.length) { setErr('No sessions found. Ensure column A has numeric Session IDs.'); return; }
+        if (!s.length) { setErr('No sessions found. Ensure column A has numeric Session IDs.'); setParsing(false); return; }
         setSessions(s); setResults([]); setStage('preview');
       } catch (ex) { setErr(`Parse error: ${ex.message}`); }
+      setParsing(false);
     };
-    reader.onerror = () => setErr('Failed to read file.');
+    reader.onerror = () => { setErr('Failed to read file.'); setParsing(false); };
     reader.readAsArrayBuffer(f);
   }, []);
 
   const onDrop = useCallback((e) => { e.preventDefault(); setDrag(false); onFile(e.dataTransfer.files[0]); }, [onFile]);
 
-  // --- Classification ---
   const classify = async (s) => {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
+        'x-api-key': API_KEY,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
@@ -271,44 +391,92 @@ export default function App() {
     let txt = d.content?.[0]?.text || '';
     const m = txt.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (m) txt = m[1];
-    return JSON.parse(txt.trim());
+    try {
+      return JSON.parse(txt.trim());
+    } catch {
+      throw new Error(`Invalid AI response — could not parse classification. Raw: ${txt.slice(0, 100)}`);
+    }
   };
 
+  const CONCURRENCY = 5;
+
   const run = async () => {
-    if (!apiKey.trim()) { setErr('Enter your Anthropic API key first.'); return; }
-    setErr(''); setProcessing(true); setStage('results'); setResults([]); setIdx(0); stopRef.current = false;
+    setErr(''); setProcessing(true); setStage('results'); setResults([]); setIdx(0);
+    stopRef.current = false; setCompletionAnim(false); setAvgTime(0);
+    startTimeRef.current = Date.now();
     const acc = [];
-    for (let i = 0; i < sessions.length; i++) {
+    let completed = 0;
+
+    for (let i = 0; i < sessions.length; i += CONCURRENCY) {
       if (stopRef.current) break;
-      setIdx(i);
-      try {
-        acc.push({ sessionId: sessions[i].sessionId, classification: await classify(sessions[i]) });
-      } catch (e) {
-        acc.push({ sessionId: sessions[i].sessionId, error: e.message, classification: null });
-      }
+      const chunk = sessions.slice(i, Math.min(i + CONCURRENCY, sessions.length));
+      const t0 = Date.now();
+
+      const chunkResults = await Promise.all(
+        chunk.map(async (session) => {
+          try {
+            return { sessionId: session.sessionId, classification: await classify(session) };
+          } catch (e) {
+            return { sessionId: session.sessionId, error: e.message, classification: null };
+          }
+        })
+      );
+
+      if (stopRef.current) break;
+      acc.push(...chunkResults);
+      completed += chunkResults.length;
+      setIdx(completed - 1);
       setResults([...acc]);
-      if (i < sessions.length - 1 && !stopRef.current) await new Promise(r => setTimeout(r, 500));
+
+      const elapsed = (Date.now() - t0) / 1000;
+      const perSession = elapsed / chunkResults.length;
+      setAvgTime(prev => prev === 0 ? perSession : prev * 0.7 + perSession * 0.3);
     }
+
     setProcessing(false);
+    if (!stopRef.current) {
+      setCompletionAnim(true);
+      setTimeout(() => setCompletionAnim(false), 4000);
+    }
   };
 
   const reset = () => {
     setStage('upload'); setSessions([]); setResults([]); setErr('');
     setProcessing(false); setIdx(0); setFilter('all'); setExpanded({});
+    setSearchTerm(''); setCompletionAnim(false); setAvgTime(0);
     if (fileRef.current) fileRef.current.value = '';
   };
 
   const toggle = (id) => setExpanded(p => ({ ...p, [id]: !p[id] }));
 
-  // --- Filtered results ---
-  const filtered = (() => {
-    if (filter === 'all') return results;
-    if (filter === 'opp') return results.filter(r => r.classification?.categories?.length > 0);
-    if (filter === 'hi') return results.filter(r => r.classification?.categories?.some(c => c.confidence === 'High'));
-    if (filter === 'ot') return results.filter(r => r.classification?.off_topic);
-    if (filter === 'no') return results.filter(r => r.classification?.no_opportunity);
-    return results.filter(r => r.classification?.categories?.some(c => c.category === filter));
-  })();
+  const eta = useMemo(() => {
+    if (!processing || avgTime === 0) return null;
+    const remaining = sessions.length - (idx + 1);
+    return fmtTime(remaining * (avgTime + 0.5));
+  }, [processing, avgTime, idx, sessions.length]);
+
+  const filtered = useMemo(() => {
+    let base = results;
+    if (filter === 'opp') base = results.filter(r => r.classification?.categories?.length > 0);
+    else if (filter === 'hi') base = results.filter(r => r.classification?.categories?.some(c => c.confidence === 'High'));
+    else if (filter === 'ot') base = results.filter(r => r.classification?.off_topic);
+    else if (filter === 'no') base = results.filter(r => r.classification?.no_opportunity);
+    else if (filter === 'err') base = results.filter(r => r.error);
+    else if (filter !== 'all') base = results.filter(r => r.classification?.categories?.some(c => c.category === filter));
+
+    if (searchTerm.trim()) {
+      const q = searchTerm.toLowerCase();
+      base = base.filter(r => {
+        const s = sessionMap.get(r.sessionId) || {};
+        return (s.farmerName || '').toLowerCase().includes(q) ||
+          (s.county || '').toLowerCase().includes(q) ||
+          (s.animalType || '').toLowerCase().includes(q) ||
+          (r.classification?.lead_summary || '').toLowerCase().includes(q) ||
+          r.sessionId.includes(q);
+      });
+    }
+    return base;
+  }, [results, filter, searchTerm, sessionMap]);
 
   const st = sessions.length ? stats(sessions) : null;
   const rs = results.length ? rStats(results) : null;
@@ -317,7 +485,16 @@ export default function App() {
   // RENDER
   // ============================================
   return (
-    <div className="app">
+    <div className={`app ${stage !== 'upload' ? 'app-active' : ''}`}>
+      {/* Animated livestock background */}
+      <LivestockBackground />
+
+      {/* Floating orbs background */}
+      <div className="bg-orbs" aria-hidden="true">
+        <div className="orb orb-1" />
+        <div className="orb orb-2" />
+        <div className="orb orb-3" />
+      </div>
 
       {/* ——— HEADER ——— */}
       <header className="hero">
@@ -330,14 +507,25 @@ export default function App() {
         </h1>
         <p className="hero-sub">
           Classify farmer conversations into commercial opportunities.
-          Powered by AI. Built for your sales team.
+          Built for your sales team.
         </p>
+        {stage !== 'upload' && (
+          <div className="hero-breadcrumb">
+            <button className="breadcrumb-link" onClick={reset}>Upload</button>
+            <span className="breadcrumb-sep">›</span>
+            <span className={stage === 'preview' ? 'breadcrumb-active' : 'breadcrumb-link'}>Preview</span>
+            {stage === 'results' && <>
+              <span className="breadcrumb-sep">›</span>
+              <span className="breadcrumb-active">Results</span>
+            </>}
+          </div>
+        )}
       </header>
 
       {/* ===== UPLOAD ===== */}
       {stage === 'upload' && (
         <div className="upload-card">
-          <div className="surface surface-pad">
+          <div className="surface surface-glass surface-pad">
             <div
               className={`drop-zone${drag ? ' active' : ''}`}
               onClick={() => fileRef.current?.click()}
@@ -345,12 +533,16 @@ export default function App() {
               onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
               onDragLeave={() => setDrag(false)}
             >
-              <div className="drop-icon">
-                <I.Upload style={{ width: 24, height: 24 }} />
-              </div>
-              <div className="drop-title">Upload session data</div>
+              {parsing ? (
+                <div className="loading-spinner" />
+              ) : (
+                <div className="drop-icon">
+                  <I.Upload style={{ width: 24, height: 24 }} />
+                </div>
+              )}
+              <div className="drop-title">{parsing ? 'Parsing sessions…' : 'Upload session data'}</div>
               <div className="drop-hint">
-                Drag your VetPower export here, or <span className="link">browse</span>
+                {parsing ? 'Reading your Excel file' : <>Drag your VetPower export here, or <span className="link">browse</span></>}
               </div>
               <span className="drop-format">.xlsx only</span>
               <input
@@ -360,40 +552,64 @@ export default function App() {
               />
             </div>
 
-            <div className="key-block">
-              <div className="key-label">
-                <I.Layers style={{ width: 14, height: 14, color: '#0d9b6a' }} />
-                Anthropic API Key
-              </div>
-              <input
-                className="key-input" type="password"
-                placeholder="sk-ant-api03-…"
-                value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-              />
-              <div className="key-hint">Required for classification · stored in memory only</div>
-            </div>
-
             {err && <div className="error-bar"><I.Alert /><span>{err}</span></div>}
+          </div>
+
+          {/* How it works */}
+          <div className="how-it-works">
+            <div className="hiw-title">How it works</div>
+            <div className="hiw-steps">
+              {[
+                [<I.Upload style={{width:20,height:20}} />, 'Upload', 'Drop your VetPower session export (.xlsx)'],
+                [<I.Layers style={{width:20,height:20}} />, 'Classify', 'Each conversation is analysed and leads identified'],
+                [<I.Down style={{width:20,height:20}} />, 'Export', 'Filter, explore, and download your lead report'],
+              ].map(([icon, title, desc], i) => (
+                <div className="hiw-step" key={i}>
+                  <div className="hiw-icon">{icon}</div>
+                  <div className="hiw-step-title">{title}</div>
+                  <div className="hiw-step-desc">{desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Feature highlights */}
+          <div className="features-row">
+            {[
+              [<I.Sparkle style={{width:18,height:18}} />, 'Fast', 'Processes sessions in seconds'],
+              [<I.Layers style={{width:18,height:18}} />, '8 Categories', 'OTC, Rx, Visits, AI, Lab, Feeds & more'],
+              [<I.Check style={{width:18,height:18}} />, 'Secure', 'Data stays in your browser'],
+              [<I.Down style={{width:18,height:18}} />, 'Export', 'Download classified leads as Excel'],
+            ].map(([icon, title, desc], i) => (
+              <div className="feature-chip" key={i}>
+                <span className="feature-icon">{icon}</span>
+                <div>
+                  <div className="feature-title">{title}</div>
+                  <div className="feature-desc">{desc}</div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
       {/* ===== PREVIEW ===== */}
       {stage === 'preview' && st && (
-        <div>
+        <div className="stage-transition">
           {/* Metrics */}
           <div className="metrics">
             {[
-              [st.total, 'Sessions'],
-              [st.animals.length, 'Animal Types'],
-              [st.counties.length, 'Counties'],
-              [st.issues.length, 'Issue Categories'],
-            ].map(([v, l], i) => (
+              [st.total, 'Sessions', <I.Layers style={{width:20,height:20}} />],
+              [st.animals.length, 'Animal Types', <I.Search style={{width:20,height:20}} />],
+              [st.counties.length, 'Counties', <I.Alert style={{width:20,height:20}} />],
+              [st.issues.length, 'Issue Categories', <I.Check style={{width:20,height:20}} />],
+            ].map(([v, l, icon], i) => (
               <div
                 key={l}
-                className={`metric${metricsVisible ? ' visible' : ''}`}
+                className={`metric metric-glass${metricsVisible ? ' visible' : ''}`}
                 style={{ animationDelay: `${i * 80}ms` }}
               >
+                <div className="metric-emoji">{icon}</div>
                 <div className="metric-val">{v}</div>
                 <div className="metric-label">{l}</div>
               </div>
@@ -407,13 +623,14 @@ export default function App() {
               ['Top Counties', st.counties],
               ['Top Issues', st.issues],
             ].map(([title, data]) => (
-              <div className="overview-block" key={title}>
+              <div className="overview-block surface-glass" key={title}>
                 <h4>{title}</h4>
                 {data.slice(0, 5).map(([n, c]) => (
                   <div className="ov-row" key={n}>
                     <span>{n}</span><span>{c}</span>
                   </div>
                 ))}
+                {data.length === 0 && <div className="ov-empty">No data</div>}
               </div>
             ))}
           </div>
@@ -421,7 +638,7 @@ export default function App() {
           {/* Table */}
           <div className="stagger-in" style={{ animationDelay: '0.4s' }}>
             <div className="section-label">Session Preview — first {Math.min(8, sessions.length)}</div>
-            <div className="table-wrap">
+            <div className="table-wrap surface-glass">
               <table className="table">
                 <thead>
                   <tr>
@@ -446,27 +663,12 @@ export default function App() {
             </div>
           </div>
 
-          {/* API key if missing */}
-          {!apiKey.trim() && (
-            <div className="surface surface-pad stagger-in" style={{ maxWidth: 480, margin: '0 auto 24px', animationDelay: '0.5s' }}>
-              <div className="key-label">
-                <I.Layers style={{ width: 14, height: 14, color: '#0d9b6a' }} />
-                Anthropic API Key
-              </div>
-              <input
-                className="key-input" type="password"
-                placeholder="sk-ant-api03-…"
-                value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-              />
-              <div className="key-hint">Enter before classifying</div>
-            </div>
-          )}
-
           {err && <div className="error-bar" style={{ maxWidth: 480, margin: '0 auto 16px' }}><I.Alert /><span>{err}</span></div>}
 
           <div className="toolbar stagger-in" style={{ animationDelay: '0.55s' }}>
             <button className="btn btn-ghost" onClick={reset}>← Back</button>
-            <button className="btn btn-accent btn-lg" onClick={run}>
+            <button className="btn btn-accent btn-lg btn-glow" onClick={run}>
+              <I.Sparkle style={{ width: 16, height: 16 }} />
               Classify {sessions.length} sessions →
             </button>
           </div>
@@ -475,39 +677,52 @@ export default function App() {
 
       {/* ===== RESULTS ===== */}
       {stage === 'results' && (
-        <div>
+        <div className="stage-transition">
+          {/* Completion celebration */}
+          {completionAnim && (
+            <div className="completion-banner">
+              <div className="completion-icon"><I.Check style={{width:28,height:28}} /></div>
+              <div className="completion-text">
+                <strong>Classification complete!</strong>
+                <span>{results.length} sessions processed in {fmtTime((Date.now() - startTimeRef.current) / 1000)}</span>
+              </div>
+            </div>
+          )}
+
           {/* Progress */}
           {processing && (
-            <div className="progress-card">
+            <div className="progress-card surface-glass">
               <div className="progress-top">
-                <h3>Classifying…</h3>
+                <h3><I.Sparkle style={{ width: 16, height: 16, color: 'var(--accent)' }} /> Classifying…</h3>
                 <button className="btn btn-stop" onClick={() => { stopRef.current = true; }}>
                   <I.Stop /> Stop
                 </button>
               </div>
               <div className="track">
-                <div className="track-fill" style={{ width: `${((idx + 1) / sessions.length) * 100}%` }} />
+                <div className="track-fill track-shimmer" style={{ width: `${((idx + 1) / sessions.length) * 100}%` }} />
               </div>
               <div className="progress-meta">
                 <span><strong>{idx + 1}</strong> of {sessions.length}</span>
-                <span>{results.length} classified</span>
+                <span>{results.filter(r => !r.error).length} classified</span>
+                {eta && <span className="eta-badge">~{eta} remaining</span>}
               </div>
             </div>
           )}
 
           {/* Pipeline */}
           {rs && (
-            <div className="pipeline">
-              <h2>Pipeline</h2>
+            <div className="pipeline surface-glass">
+              <h2>Classification Results</h2>
               <div className="metrics">
                 {[
-                  [rs.total, 'Processed'],
-                  [rs.opp, 'Opportunities'],
-                  [rs.hi, 'High Confidence'],
-                  [rs.ot, 'Off-Topic'],
-                  [rs.no, 'No Opportunity'],
-                ].map(([v, l]) => (
-                  <div className="metric visible" key={l}>
+                  [rs.total, 'Processed', <I.Layers style={{width:20,height:20}} />],
+                  [rs.opp, 'Opportunities', <I.Sparkle style={{width:20,height:20}} />],
+                  [rs.hi, 'High Confidence', <I.Check style={{width:20,height:20}} />],
+                  [rs.ot, 'Off-Topic', <I.Redo style={{width:20,height:20}} />],
+                  [rs.no, 'No Opportunity', <I.Alert style={{width:20,height:20}} />],
+                ].map(([v, l, icon]) => (
+                  <div className="metric metric-glass visible" key={l}>
+                    <div className="metric-emoji">{icon}</div>
                     <div className="metric-val">{v}</div>
                     <div className="metric-label">{l}</div>
                   </div>
@@ -525,7 +740,7 @@ export default function App() {
                       <div className="bar-row" key={cat}>
                         <span className="bar-name">{cat}</span>
                         <div className="bar-track">
-                          <div className="bar-fill" style={{ width: `${pct}%`, background: col }}>
+                          <div className="bar-fill" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${col}, ${col}dd)` }}>
                             {pct > 25 && <span className="bar-val">{cnt}</span>}
                           </div>
                         </div>
@@ -543,8 +758,8 @@ export default function App() {
             <h2>Sessions <span style={{ fontWeight: 400, color: '#999' }}>({filtered.length})</span></h2>
             {results.length > 0 && !processing && (
               <div className="actions">
-                <button className="btn btn-accent" onClick={() => downloadXlsx(results, sessions)}>
-                  <I.Down /> Export
+                <button className="btn btn-accent btn-glow" onClick={() => downloadXlsx(results, sessions)}>
+                  <I.Down /> Export Report
                 </button>
                 <button className="btn btn-ghost" onClick={reset}>
                   <I.Redo /> New file
@@ -552,6 +767,23 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Search box */}
+          {results.length > 0 && (
+            <div className="search-box">
+              <I.Search style={{ width: 16, height: 16, opacity: 0.4 }} />
+              <input
+                type="text"
+                placeholder="Search by farmer, county, animal, or session ID…"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="search-input"
+              />
+              {searchTerm && (
+                <button className="search-clear" onClick={() => setSearchTerm('')}>×</button>
+              )}
+            </div>
+          )}
 
           {/* Filters */}
           {results.length > 0 && (
@@ -566,7 +798,7 @@ export default function App() {
                 </button>
               ))}
 
-              {Object.entries(CATS).map(([cat, { color }]) => {
+              {Object.entries(CATS).map(([cat, { color, icon }]) => {
                 const ct = rs?.cc[cat] || 0;
                 if (!ct) return null;
                 return (
@@ -588,6 +820,11 @@ export default function App() {
                   No Opp. <span className="ct">{rs.no}</span>
                 </button>
               )}
+              {rs?.errCount > 0 && (
+                <button className={`pill pill-err${filter === 'err' ? ' on' : ''}`} onClick={() => setFilter('err')}>
+                  ⚠ Errors <span className="ct">{rs.errCount}</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -598,12 +835,12 @@ export default function App() {
             )}
 
             {filtered.map(r => {
-              const s = sessions.find(x => x.sessionId === r.sessionId) || {};
+              const s = sessionMap.get(r.sessionId) || {};
               const cl = r.classification || {}, cats = cl.categories || [];
               const open = expanded[r.sessionId];
 
               return (
-                <div key={r.sessionId} className={`s-card${r.error ? ' err' : ''}`}>
+                <div key={r.sessionId} className={`s-card${r.error ? ' err' : ''}${open ? ' s-card-open' : ''}`}>
                   <div className="s-head" onClick={() => toggle(r.sessionId)}>
                     <div className="s-id-block">
                       <span className="s-id">#{r.sessionId}</span>
@@ -708,6 +945,17 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ===== FOOTER ===== */}
+      <footer className="app-footer">
+        <div className="footer-brand">
+          <span className="footer-dot" />
+          VetPower Lead Engine
+        </div>
+        <div className="footer-meta">
+          Built by <strong>Delta40 Venture Studio</strong>
+        </div>
+      </footer>
     </div>
   );
 }
