@@ -730,6 +730,58 @@ h1, h2, h3, h4 {
   margin-top: 1px;
 }
 
+/* --- Credit Depletion Alert --- */
+.credit-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  background: linear-gradient(135deg, #fff8e1, #fff3cd);
+  border: 1px solid #ffc107;
+  border-radius: var(--r-md);
+  margin-bottom: var(--s5);
+  animation: fadeUp var(--dur-base) var(--ease-out);
+  flex-wrap: wrap;
+}
+
+.credit-alert-icon {
+  font-size: 1.4rem;
+  flex-shrink: 0;
+}
+
+.credit-alert-text {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.credit-alert-text strong {
+  font-size: 0.9rem;
+  color: #856404;
+}
+
+.credit-alert-text span {
+  font-size: 0.78rem;
+  color: #856404;
+}
+
+.credit-alert-close {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: #856404;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast);
+}
+
+.credit-alert-close:hover {
+  background: rgba(133, 100, 4, 0.1);
+}
+
 /* --- Completion Banner --- */
 .completion-banner {
   display: flex;

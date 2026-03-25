@@ -12,7 +12,7 @@ const API_KEY = import.meta.env.VITE_ANTHROPIC_KEY || '';
 // SECURITY: Upload & processing limits (OWASP file upload best practices)
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-const MAX_SESSIONS = 500;
+const LARGE_SESSION_WARNING = 2000; // Warn (don't block) at 2000+ sessions
 const MAX_FIELD_LENGTH = 500;
 const MAX_CONVERSATION_LENGTH = 50000;
 const ALLOWED_EXTENSIONS = /\.xlsx$/i;
@@ -206,10 +206,8 @@ function parseSessions(wb) {
     } else if (cur && r[15]) {
       cur._parts.push(String(r[15]));
     }
-    // SECURITY: Cap max sessions to prevent abuse
-    if (out.length >= MAX_SESSIONS) break;
   }
-  if (cur && out.length < MAX_SESSIONS) {
+  if (cur) {
     cur.conversation = cur._parts.filter(Boolean).join('\n');
     out.push(cur);
   }
@@ -422,6 +420,7 @@ export default function App() {
   const [completionAnim, setCompletionAnim] = useState(false);
   const [avgTime, setAvgTime] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
+  const [creditAlert, setCreditAlert] = useState(null); // Token depletion warning
 
   const fileRef = useRef(null);
   const stopRef = useRef(false);
@@ -460,8 +459,8 @@ export default function App() {
         const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
         const s = parseSessions(wb);
         if (!s.length) { setErr('No sessions found. Ensure column A has numeric Session IDs.'); setParsing(false); return; }
-        if (s.length >= MAX_SESSIONS) {
-          setErr(`File contains many sessions. Processing capped at ${MAX_SESSIONS} for performance.`);
+        if (s.length >= LARGE_SESSION_WARNING) {
+          setErr(`⚠ ${s.length} sessions detected. Processing this many sessions may take a while and consume significant API credits.`);
         }
         setSessions(s); setResults([]); setStage('preview');
       } catch (ex) { setErr(`Parse error: ${ex.message}`); }
@@ -496,7 +495,15 @@ export default function App() {
     // SECURITY: Handle HTTP errors with user-friendly messages
     if (res.status === 429) throw new Error('API rate limit exceeded. The system will retry automatically.');
     if (res.status === 401) throw new Error('API key is invalid or expired. Contact your administrator.');
-    if (!res.ok) throw new Error(`API error (${res.status}). Please try again.`);
+    if (!res.ok) {
+      // TOKEN DEPLETION: Detect low credit balance from Anthropic
+      const errBody = await res.text().catch(() => '');
+      if (errBody.includes('credit balance')) {
+        setCreditAlert('⚠ Your Anthropic API credit balance is too low. Please top up at console.anthropic.com/settings/billing to continue classification.');
+        throw new Error('API credits depleted. Please add credits to your Anthropic account to continue.');
+      }
+      throw new Error(`API error (${res.status}). Please try again.`);
+    }
 
     const d = await res.json();
     let txt = d.content?.[0]?.text || '';
@@ -635,6 +642,21 @@ export default function App() {
           </div>
         )}
       </header>
+
+      {/* TOKEN DEPLETION ALERT — persistent banner when credits are low */}
+      {creditAlert && (
+        <div className="credit-alert" role="alert">
+          <span className="credit-alert-icon">⚠</span>
+          <div className="credit-alert-text">
+            <strong>API Credits Low</strong>
+            <span>{creditAlert}</span>
+          </div>
+          <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer" className="btn btn-accent" style={{fontSize:'0.75rem',padding:'6px 14px',whiteSpace:'nowrap'}}>
+            Top Up Credits
+          </a>
+          <button onClick={() => setCreditAlert(null)} className="credit-alert-close" aria-label="Dismiss">✕</button>
+        </div>
+      )}
 
       {/* ===== UPLOAD ===== */}
       {stage === 'upload' && (
