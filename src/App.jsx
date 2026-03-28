@@ -9,18 +9,13 @@ import * as XLSX from 'xlsx';
 // The .env file is gitignored and never committed to source control.
 const API_KEY = import.meta.env.VITE_ANTHROPIC_KEY || '';
 
-// SECURITY: Upload & processing limits (OWASP file upload best practices)
-const MAX_FILE_SIZE_MB = 10;
+// Upload & processing limits
+const MAX_FILE_SIZE_MB = 50;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-const LARGE_SESSION_WARNING = 2000; // Warn (don't block) at 2000+ sessions
-const MAX_FIELD_LENGTH = 500;
-const MAX_CONVERSATION_LENGTH = 50000;
+const LARGE_SESSION_INFO = 5000; // Info note at 5000+ sessions
+const MAX_FIELD_LENGTH = 5000;
+const MAX_CONVERSATION_LENGTH = 500000;
 const ALLOWED_EXTENSIONS = /\.xlsx$/i;
-
-// SECURITY: Client-side rate limiting
-const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
-const RATE_LIMIT_MAX_CALLS = 60;    // max 60 API calls per minute
-const apiCallTimestamps = [];
 
 const CATS = {
   'OTC Medication': { cls: 'badge-otc', color: '#0d9b6a' },
@@ -128,19 +123,7 @@ function validateFile(file) {
   return null; // no error
 }
 
-/** SECURITY: Check rate limit before API call */
-function checkRateLimit() {
-  const now = Date.now();
-  // Remove timestamps older than the window
-  while (apiCallTimestamps.length > 0 && apiCallTimestamps[0] < now - RATE_LIMIT_WINDOW_MS) {
-    apiCallTimestamps.shift();
-  }
-  if (apiCallTimestamps.length >= RATE_LIMIT_MAX_CALLS) {
-    return false; // rate limited
-  }
-  apiCallTimestamps.push(now);
-  return true; // allowed
-}
+// Rate limiting removed — Anthropic's own rate limits + retry/backoff logic handles this
 
 /** SECURITY: Validate known category names from Claude response */
 const VALID_CATEGORIES = new Set([
@@ -459,8 +442,8 @@ export default function App() {
         const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
         const s = parseSessions(wb);
         if (!s.length) { setErr('No sessions found. Ensure column A has numeric Session IDs.'); setParsing(false); return; }
-        if (s.length >= LARGE_SESSION_WARNING) {
-          setErr(`⚠ ${s.length} sessions detected. Processing this many sessions may take a while and consume significant API credits.`);
+        if (s.length >= LARGE_SESSION_INFO) {
+          setErr(`ℹ ${s.length} sessions detected. Processing will take a few minutes.`);
         }
         setSessions(s); setResults([]); setStage('preview');
       } catch (ex) { setErr(`Parse error: ${ex.message}`); }
@@ -473,10 +456,8 @@ export default function App() {
   const onDrop = useCallback((e) => { e.preventDefault(); setDrag(false); onFile(e.dataTransfer.files[0]); }, [onFile]);
 
   const classify = async (s) => {
-    // SECURITY: Check API key is configured
+    // Check API key is configured
     if (!API_KEY) throw new Error('API key not configured. Contact your administrator.');
-    // SECURITY: Client-side rate limiting
-    if (!checkRateLimit()) throw new Error('Rate limit reached (60 calls/min). Please wait a moment.');
 
     const res = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
       method: 'POST',

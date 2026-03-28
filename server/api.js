@@ -34,8 +34,6 @@ const ANTHROPIC_KEY = process.env.VITE_ANTHROPIC_KEY || '';
 const API_SERVER_KEY = process.env.API_SERVER_KEY || 'vetpower-api-key-change-me';
 const ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
 const MAX_TOKENS = 1024;
-const RATE_LIMIT_WINDOW_MS = 60000;
-const RATE_LIMIT_MAX = 120;
 
 // ============================================
 // SYSTEM PROMPT (same as frontend)
@@ -83,30 +81,14 @@ OUTPUT FORMAT — respond ONLY with this JSON, no other text:
   "lead_summary": "One-line plain English summary for the sales team"
 }`;
 
-// ============================================
-// RATE LIMITER (in-memory per IP)
-// ============================================
-
-const rateLimitMap = new Map();
-
-function checkRateLimit(ip) {
-  const now = Date.now();
-  if (!rateLimitMap.has(ip)) rateLimitMap.set(ip, []);
-  const timestamps = rateLimitMap.get(ip);
-  // Remove old timestamps
-  while (timestamps.length > 0 && timestamps[0] < now - RATE_LIMIT_WINDOW_MS) {
-    timestamps.shift();
-  }
-  if (timestamps.length >= RATE_LIMIT_MAX) return false;
-  timestamps.push(now);
-  return true;
-}
+// Rate limiting removed — Anthropic's own API rate limits are sufficient
+// and the retry/backoff logic in the frontend handles 429 responses gracefully
 
 // ============================================
 // HELPERS
 // ============================================
 
-function sanitize(str, maxLen = 500) {
+function sanitize(str, maxLen = 5000) {
   if (typeof str !== 'string') return String(str || '');
   return str
     .replace(/<[^>]*>/g, '')
@@ -124,7 +106,7 @@ Issue Description: ${sanitize(s.issueDescription) || 'Not specified'}
 Farmer: ${sanitize(s.farmerName) || 'Unknown'}, County: ${sanitize(s.county) || 'Unknown'}, Ward: ${sanitize(s.ward) || 'Unknown'}, Phone: ${sanitize(s.phone) || 'Unknown'}
 
 CONVERSATION:
-${sanitize(s.conversation, 3000)}
+${sanitize(s.conversation, 50000)}
 
 Classify this session into commercial opportunity categories.`;
 }
@@ -179,7 +161,7 @@ app.use(cors({
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'x-api-key'],
 }));
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // SECURITY: API key authentication middleware
 function authenticate(req, res, next) {
@@ -193,17 +175,6 @@ function authenticate(req, res, next) {
   next();
 }
 
-// SECURITY: Rate limiting middleware
-function rateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
-  if (!checkRateLimit(ip)) {
-    return res.status(429).json({
-      error: 'Too Many Requests',
-      message: 'Rate limit exceeded. Max 120 requests per minute.',
-    });
-  }
-  next();
-}
 
 // ============================================
 // ROUTES
@@ -222,7 +193,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Classify a single session
-app.post('/api/classify', authenticate, rateLimit, async (req, res) => {
+app.post('/api/classify', authenticate, async (req, res) => {
   try {
     const { session } = req.body;
     if (!session || typeof session !== 'object') {
@@ -254,7 +225,7 @@ app.post('/api/classify', authenticate, rateLimit, async (req, res) => {
 });
 
 // Classify multiple sessions (batch, max 50)
-app.post('/api/classify-batch', authenticate, rateLimit, async (req, res) => {
+app.post('/api/classify-batch', authenticate, async (req, res) => {
   try {
     const { sessions } = req.body;
     if (!Array.isArray(sessions) || sessions.length === 0) {
@@ -263,15 +234,15 @@ app.post('/api/classify-batch', authenticate, rateLimit, async (req, res) => {
         message: 'Request body must contain a "sessions" array.',
       });
     }
-    if (sessions.length > 50) {
+    if (sessions.length > 200) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'Maximum 50 sessions per batch request. Split into smaller batches.',
+        message: 'Maximum 200 sessions per batch request. Split into smaller batches.',
       });
     }
 
-    // Process in parallel (5 at a time)
-    const CONCURRENCY = 5;
+    // Process in parallel (10 at a time)
+    const CONCURRENCY = 10;
     const results = [];
     for (let i = 0; i < sessions.length; i += CONCURRENCY) {
       const chunk = sessions.slice(i, Math.min(i + CONCURRENCY, sessions.length));
